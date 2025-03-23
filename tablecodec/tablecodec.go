@@ -41,6 +41,7 @@ const (
 	prefixLen = 1 + idLen /*tableID*/ + 2
 	// RecordRowKeyLen is public for calculating average row size.
 	RecordRowKeyLen       = prefixLen + idLen /*handle*/
+	IndexRowKeyLen        = prefixLen + idLen /*indexID*/
 	tablePrefixLength     = 1
 	recordPrefixSepLength = 2
 )
@@ -98,7 +99,15 @@ func DecodeRecordKey(key kv.Key) (tableID int64, handle int64, err error) {
 	 *   5. understanding the coding rules is a prerequisite for implementing this function,
 	 *      you can learn it in the projection 1-2 course documentation.
 	 */
-	return
+	tableID, err = DecodeTableID(key)
+	if err != nil {
+		return 0, 0, err
+	}
+	handle, err = DecodeRowKey(key)
+	if err != nil {
+		return 0, 0, err
+	}
+	return tableID, handle, nil
 }
 
 // appendTableIndexPrefix appends table index prefix  "t[tableID]_i".
@@ -148,7 +157,41 @@ func DecodeIndexKeyPrefix(key kv.Key) (tableID int64, indexID int64, indexValues
 	 *   5. understanding the coding rules is a prerequisite for implementing this function,
 	 *      you can learn it in the projection 1-2 course documentation.
 	 */
+	tableID, err = DecodeTableID(key)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	indexID, err = DecodeIndexID(key)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	indexValues, err = DecodeIndexValues(key)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+
 	return tableID, indexID, indexValues, nil
+}
+
+func DecodeIndexValues(key kv.Key) ([]byte, error) {
+	if !hasTablePrefix(key) || !hasIndexPrefixSep(key[prefixLen-2:]) || len(key) <= IndexRowKeyLen {
+		return nil, errInvalidIndexKey.GenWithStack("invalid key - %q", key)
+	}
+
+	return key[prefixLen+idLen:], nil
+}
+
+func DecodeIndexID(key kv.Key) (indexID int64, err error) {
+	if !hasTablePrefix(key) || !hasIndexPrefixSep(key[prefixLen-2:]) {
+		return 0, errInvalidIndexKey.GenWithStack("invalid key - %q", key)
+	}
+	key = key[prefixLen:]
+	_, indexID, err = codec.DecodeInt(key)
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
+	terror.Log(errors.Trace(err))
+	return indexID, nil
 }
 
 // DecodeIndexKey decodes the key and gets the tableID, indexID, indexValues.
@@ -214,6 +257,10 @@ func hasRecordPrefixSep(key kv.Key) bool {
 	return key[0] == recordPrefixSep[0] && key[1] == recordPrefixSep[1]
 }
 
+func hasIndexPrefixSep(key kv.Key) bool {
+	return key[0] == indexPrefixSep[0] && key[1] == indexPrefixSep[1]
+}
+
 // DecodeMetaKey decodes the key and get the meta key and meta field.
 func DecodeMetaKey(ek kv.Key) (key []byte, field []byte, err error) {
 	var tp uint64
@@ -272,15 +319,21 @@ func DecodeKeyHead(key kv.Key) (tableID int64, indexID int64, isRecordKey bool, 
 }
 
 // DecodeTableID decodes the table ID of the key, if the key is not table key, returns 0.
-func DecodeTableID(key kv.Key) int64 {
+func DecodeTableID(key kv.Key) (int64, error) {
 	if !key.HasPrefix(tablePrefix) {
-		return 0
+		err := errInvalidKey.GenWithStack("invalid key - %q", key)
+		if err != nil {
+			return 0, err
+		}
+		return 0, err
 	}
 	key = key[len(tablePrefix):]
 	_, tableID, err := codec.DecodeInt(key)
-	// TODO: return error.
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
 	terror.Log(errors.Trace(err))
-	return tableID
+	return tableID, nil
 }
 
 // DecodeRowKey decodes the key and gets the handle.
